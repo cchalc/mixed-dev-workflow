@@ -1,0 +1,126 @@
+variables:
+- group: Databricks-environment
+
+trigger:
+  batch: true
+  branches:
+    include:
+    - '*'
+
+  tags:
+    include:
+      - v*.*
+      - prod
+
+stages:
+- stage: onPush
+  condition: |
+    and(
+      ne(variables['Build.SourceBranch'], 'refs/heads/releases'),
+      not(startsWith(variables['Build.SourceBranch'], 'refs/tags/v'))
+    )
+  jobs:
+  - job: onPushJob
+    pool:
+      vmImage: 'ubuntu-18.04'
+
+    steps:
+    - script: env | sort
+      displayName: 'Environment / Context'
+
+    - task: UsePythonVersion@0
+      displayName: 'Use Python 3.7'
+      inputs:
+        versionSpec: 3.7
+
+    - checkout: self
+      persistCredentials: true
+      clean: true
+      displayName: 'Checkout & Build.Reason: $(Build.Reason) & Build.SourceBranchName: $(Build.SourceBranchName)'
+
+    # - script: git checkout dev
+    #   displayName: 'Get Latest Branch'
+
+    - script: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest requests setuptools wheel
+        pip install -U databricks-cli
+        pip install -e .
+      displayName: 'Load Python Dependencies'
+
+    - script: pytest tests/unit
+      displayName: 'Run Unit tests'
+
+    - script: |
+        echo "
+        $(DATABRICKS_HOST)
+        $(DATABRICKS_TOKEN)" | dbfs configure --token
+      displayName: 'Configure dbfs cli'
+
+    # - script: |
+    #     echo "[DEFAULT]" >> ~/.databrickscfg
+    #     echo "host = $DATABRICKS_HOST" >> ~/.databrickscfg
+    #     echo "token = $DATABRICKS_TOKEN" >> ~/.databrickscfg
+    #   env:
+    #     QA_HOST: $(DATABRICKS_HOST)
+    #     QA_TOKEN: $(DATABRICKS_TOKEN)
+    #   displayName: 'Set up Databricks cli for QA workspace'
+
+    - script: |
+        dbfs ls
+      displayName: 'test dbfs cli'
+
+    - script: |
+        databricks workspace mkdirs /dltp8tdylp/demo_repo
+        databricks workspace import_dir -o -e $(Build.Repository.LocalPath)/central_model_registry/notebooks /dltp8tdylp/demo_repo --profile DEFAULT
+      displayName: 'Copy notebooks to QA workspace'
+
+    - script: python setup.py sdist bdist_wheel
+      displayName: 'Build python module'
+
+    - script: databricks fs cp -r --overwrite $(Build.Repository.LocalPath)/dist dbfs:/FileStore/python/central_model_registry --profile DEFAULT
+      displayName: 'Copy build to QA DBFS'
+
+    - script: databricks fs cp --overwrite $(Build.Repository.LocalPath)/ci-cd-scripts/test_init.sh dbfs:/databricks/scripts/test_init.sh --profile DEFAULT
+      displayName: 'Set up the init script'
+
+# - script: |
+#     databricks workspace mkdirs /dltp8tdylp/demo_repo
+#     databricks workspace import -l PYTHON -o $(Build.SourcesDirectory)/"notebooks/dltp8tdylp/deploy_azure_ml_model_.py" "/dltp8tdylp/deploy/deploy_azure_ml_model"
+#   displayName: 'Import ML Deploy Notebook'
+
+
+# NUTTER
+
+
+    # - script: |
+    #     python -m pip install --upgrade pip nutter
+    #   displayName: 'Install dependencies'
+
+# https://docs.databricks.com/projects.html#projects-api-experimental
+    # - script: |
+    #     echo "Checking out the $(Build.SourceBranchName) branch"
+    #     curl -s -n -X POST -o "/tmp/$(Build.SourceBranchName)-out.json" "$DATABRICKS_HOST/api/2.0/projects/fetch-and-checkout" \
+    #       -H "Authorization: Bearer $DATABRICKS_TOKEN" \
+    #       -d "{\"path\": \"/Projects/christopher.chalcraft@databricks.com/Staging\", \"branch\": \"$(Build.SourceBranchName)\"}"; \
+    #       cat "/tmp/$(Build.SourceBranchName)-out.json"; \
+    #       grep -v error_code "/tmp/$(Build.SourceBranchName)-out.json"
+    #   env:
+    #     DATABRICKS_HOST: $(DATABRICKS_HOST)
+    #     DATABRICKS_TOKEN: $(DATABRICKS_TOKEN)
+    #   displayName: 'Update Staging project'
+
+    # - script: |
+    #     nutter run '/Projects/christopher.chalcraft@databricks.com/Staging/' --cluster_id $(CLUSTER_ID) --recursive --junit_report
+    #   env:
+    #     DATABRICKS_HOST: $(DATABRICKS_HOST)
+    #     DATABRICKS_TOKEN: $(DATABRICKS_TOKEN)
+    #   displayName: 'Execute Nutter tests'
+
+    # - task: PublishTestResults@2
+    #   inputs:
+    #     testResultsFormat: 'JUnit'
+    #     testResultsFiles: '**/test-*.xml' 
+    #     failTaskOnFailedTests: true
+
